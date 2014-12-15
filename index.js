@@ -86,6 +86,9 @@ Signup.prototype.postSignup = function(req, res, next) {
   var name = req.body.name;
   var email = req.body.email;
   var password = req.body.password;
+  //Frank
+  var code = req.body.code;
+  var type = null;
 
   var error = null;
   // regexp from https://github.com/angular/angular.js/blob/master/src/ng/directive/input.js#L4
@@ -124,7 +127,7 @@ Signup.prototype.postSignup = function(req, res, next) {
   }
 
   // check for duplicate name
-  adapter.find('name', name, function(err, user) {
+  adapter.findUser('name', name, function(err, user) {
     if (err) return next(err);
 
     if (user) {
@@ -145,7 +148,7 @@ Signup.prototype.postSignup = function(req, res, next) {
     }
 
     // check for duplicate email - send reminder when duplicate email is found
-    adapter.find('email', email, function(err, user) {
+    adapter.findUser('email', email, function(err, user) {
       if (err) return next(err);
 
       // custom or built-in view
@@ -169,11 +172,110 @@ Signup.prototype.postSignup = function(req, res, next) {
         return;
       }
 
-      // looks like everything is fine
+      if(code.indexOf('t') == 0){
+        type = 'teacher';
+        adapter.findInvitation('code', code, function(err, invitation){
+          if (err) return next(err);
+          if(!invitation){
+            error = '您输入的邀请码不存在。';
+          }else if(invitation.expirationTime < new Date()){
+            error = '您输入的邀请码已过期。';
+          }else if(invitation.useTime){
+            error = '您输入的邀请码已被使用。'
+          }else{
+            // looks like everything is fine
+            invitation.useTime = new Date();
+            adapter.updateInvitation(invitation, function(err, res){
+              if (err) return next(err);
+
+              // save new user to db
+              adapter.saveUser(name, email, password, type, function(err, user) {
+                if (err) return next(err);
+
+                // send email with link for address verification
+                var mail = new Mail(config);
+                mail.signup(user.name, user.email, user.signupToken, function(err, result) {
+                  if (err) return next(err);
+
+                  // emit event
+                  that.emit('signup::post', user);
+
+                  // send only JSON when REST is active
+                  if (config.rest) return res.send(204);
+
+                  res.render(successView, {
+                    title: 'Sign up - Email sent',
+                    basedir: req.app.get('views')
+                  });
+                });
+              });
+            });
+          }
+          if (error) {
+            // send only JSON when REST is active
+            if (config.rest) return res.json(403, {error: error});
+          }
+        });
+      }else if(code.indexOf('s') == 0){
+        type = 'student';
+        adapter.findClazz('code', code, function(err, clazz){
+          if (err) return next(err);
+          if(!clazz){
+            error = '班级不存在。';
+          }/*else if(class.number == 50){
+            error = '班级已满员。'
+          }*/else{
+            // looks like everything is fine
+
+            // save new user to db
+            adapter.saveUser(name, email, password, type, function(err, user) {
+              if (err) return next(err);
+
+              // send email with link for address verification
+              var mail = new Mail(config);
+              mail.signup(user.name, user.email, user.signupToken, function(err, result) {
+                if (err) return next(err);
+
+                // emit event
+                that.emit('signup::post', user);
+
+                // send only JSON when REST is active
+                if (config.rest) return res.send(204);
+
+                res.render(successView, {
+                  title: 'Sign up - Email sent',
+                  basedir: req.app.get('views')
+                });
+              });
+            });
+          }
+          if (error) {
+            // send only JSON when REST is active
+            if (config.rest) return res.json(403, {error: error});
+          }
+        });
+      }else{
+        error = '邀请码格式不正确。';
+      }
+
+      if (error) {
+        // send only JSON when REST is active
+        if (config.rest) return res.json(403, {error: error});
+      }
+
+      /*// looks like everything is fine
 
       // save new user to db
-      adapter.save(name, email, password, function(err, user) {
+      adapter.saveUser(name, email, password, type, function(err, user) {
         if (err) return next(err);
+
+        if(type == 'teacher'){
+          adapter.updateInvitation();
+          adapter.saveTeacher();
+        }else if(type == 'student'){
+          adapter.saveClassStudentInstance();
+          adapter.saveStudent();
+        }
 
         // send email with link for address verification
         var mail = new Mail(config);
@@ -192,7 +294,7 @@ Signup.prototype.postSignup = function(req, res, next) {
           });
         });
 
-      });
+      });*/
 
     });
 
@@ -262,7 +364,7 @@ Signup.prototype.postSignupResend = function(req, res, next) {
   }
 
   // check for user with given email address
-  adapter.find('email', email, function(err, user) {
+  adapter.findUser('email', email, function(err, user) {
     if (err) return next(err);
 
     // custom or built-in view
@@ -294,7 +396,7 @@ Signup.prototype.postSignupResend = function(req, res, next) {
     user.signupTokenExpires = moment().add(timespan, 'ms').toDate();
 
     // save updated user to db
-    adapter.update(user, function(err, user) {
+    adapter.updateUser(user, function(err, user) {
       if (err) return next(err);
 
       // send sign up email
@@ -342,7 +444,7 @@ Signup.prototype.getSignupToken = function(req, res, next) {
   if (!re.test(token)) return next();
 
   // find user by token
-  adapter.find('signupToken', token, function(err, user) {
+  adapter.findUser('signupToken', token, function(err, user) {
     if (err) return next(err);
 
     // no user found -> forward to error handling middleware
@@ -355,7 +457,7 @@ Signup.prototype.getSignupToken = function(req, res, next) {
       delete user.signupToken;
 
       // save updated user to db
-      adapter.update(user, function(err, user) {
+      adapter.updateUser(user, function(err, user) {
         if (err) return next(err);
 
         // send only JSON when REST is active
@@ -386,26 +488,57 @@ Signup.prototype.getSignupToken = function(req, res, next) {
     delete user.signupTokenExpires;
 
     // save user with updated values to db
-    adapter.update(user, function(err, user) {
+    adapter.updateUser(user, function(err, user) {
       if (err) return next(err);
 
-      // emit 'signup' event
-      that.emit('signup', user, res);
+      if(user.type == 'teacher'){
+        adapter.saveTeacher(user, function(err, teacher){
+          if (err) return next(err);
+          
+          // emit 'signup' event
+          that.emit('signup', user, res);
 
-      if (config.signup.handleResponse) {
+          if (config.signup.handleResponse) {
 
-        // send only JSON when REST is active
-        if (config.rest) return res.send(204);
+            // send only JSON when REST is active
+            if (config.rest) return res.send(204);
 
-        // custom or built-in view
-        var view = config.signup.views.verified || join('mail-verification-success');
+            // custom or built-in view
+            var view = config.signup.views.verified || join('mail-verification-success');
 
-        // render email verification success view
-        res.render(view, {
-          title: 'Sign up success',
-          basedir: req.app.get('views')
+            // render email verification success view
+            res.render(view, {
+              title: 'Sign up success',
+              basedir: req.app.get('views')
+            });
+
+          }
         });
+      }else if(user.type == 'student'){
+        adapter.saveStudent(user, function(err, student){
+          if (err) return next(err);
+          adapter.saveClassStudentInstance(clazz, student, function(err, classStudentInstance){
+            if (err) return next(err);
+            // emit 'signup' event
+            that.emit('signup', user, res);
 
+            if (config.signup.handleResponse) {
+
+              // send only JSON when REST is active
+              if (config.rest) return res.send(204);
+
+              // custom or built-in view
+              var view = config.signup.views.verified || join('mail-verification-success');
+
+              // render email verification success view
+              res.render(view, {
+                title: 'Sign up success',
+                basedir: req.app.get('views')
+              });
+
+            }
+          });
+        });
       }
 
     });
